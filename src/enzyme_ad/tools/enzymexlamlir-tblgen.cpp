@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/TableGen/Main.h"
@@ -17,6 +18,9 @@ enum ActionType {
   GenPopulatePatternsFuncDecl,
   GenPopulatePatternsFuncDef,
   GenPopulatePatternsInterfaceImpl,
+  GenPopulateRaisingPatternsFuncDecl,
+  GenPopulateRaisingPatternsFuncDef,
+  GenPopulateRaisingPatternsInterfaceImpl,
 };
 
 static llvm::cl::opt<ActionType> action(
@@ -26,17 +30,26 @@ static llvm::cl::opt<ActionType> action(
     llvm::cl::values(clEnumValN(GenPopulatePatternsFuncDef,
                                 "gen-populate-patterns-func-defs", "")),
     llvm::cl::values(clEnumValN(GenPopulatePatternsInterfaceImpl,
-                                "gen-populate-patterns-interface-impl", "")));
+                                "gen-populate-patterns-interface-impl", "")),
+    llvm::cl::values(clEnumValN(GenPopulateRaisingPatternsFuncDecl,
+                                "gen-populate-raising-patterns-func-decls",
+                                "")),
+    llvm::cl::values(clEnumValN(GenPopulateRaisingPatternsFuncDef,
+                                "gen-populate-raising-patterns-func-defs", "")),
+    llvm::cl::values(clEnumValN(GenPopulateRaisingPatternsInterfaceImpl,
+                                "gen-populate-raising-patterns-interface-impl",
+                                "")));
 
-llvm::StringRef getPopulateFunctionNameSuffix(llvm::Record *rec) {
+llvm::StringRef getPopulateFunctionNameSuffix(const llvm::Record *rec) {
   return rec->getName().ends_with("Op") ? rec->getName().drop_back(2)
                                         : rec->getName();
 }
 
 static bool emitPopulatePatterns(llvm::raw_ostream &os,
-                                 llvm::RecordKeeper &records) {
-  for (llvm::Record *rec :
-       records.getAllDerivedDefinitions("EnzymeHLOPatternOp")) {
+                                 const llvm::RecordKeeper &records,
+                                 llvm::StringRef patternOpStr) {
+  for (const llvm::Record *rec :
+       records.getAllDerivedDefinitions(patternOpStr)) {
     os << "void ";
     llvm::StringRef ns = rec->getValueAsString("cppNamespace");
     if (!ns.empty())
@@ -53,9 +66,10 @@ static bool emitPopulatePatterns(llvm::raw_ostream &os,
 }
 
 static bool emitPopulatePatternsFuncDecls(llvm::raw_ostream &os,
-                                          llvm::RecordKeeper &records) {
-  for (llvm::Record *rec :
-       records.getAllDerivedDefinitions("EnzymeHLOPatternOp")) {
+                                          const llvm::RecordKeeper &records,
+                                          llvm::StringRef patternOpStr) {
+  for (const llvm::Record *rec :
+       records.getAllDerivedDefinitions(patternOpStr)) {
     llvm::StringRef ns = rec->getValueAsString("cppNamespace");
     if (ns.starts_with("::"))
       ns = ns.drop_front(2);
@@ -69,9 +83,10 @@ static bool emitPopulatePatternsFuncDecls(llvm::raw_ostream &os,
 }
 
 static bool emitPopulatePatternsFuncDefs(llvm::raw_ostream &os,
-                                         llvm::RecordKeeper &records) {
-  for (llvm::Record *rec :
-       records.getAllDerivedDefinitions("EnzymeHLOPatternOp")) {
+                                         const llvm::RecordKeeper &records,
+                                         llvm::StringRef patternOpStr) {
+  for (const llvm::Record *rec :
+       records.getAllDerivedDefinitions(patternOpStr)) {
     os << "void ";
     llvm::StringRef ns = rec->getValueAsString("cppNamespace");
     if (!ns.empty())
@@ -89,14 +104,21 @@ static bool emitPopulatePatternsFuncDefs(llvm::raw_ostream &os,
   return false;
 }
 
-static bool tablegenMain(llvm::raw_ostream &os, llvm::RecordKeeper &records) {
+static bool tablegenMain(llvm::raw_ostream &os,
+                         const llvm::RecordKeeper &records) {
   switch (action) {
   case GenPopulatePatternsFuncDecl:
-    return emitPopulatePatternsFuncDecls(os, records);
+    return emitPopulatePatternsFuncDecls(os, records, "EnzymeHLOPatternOp");
   case GenPopulatePatternsFuncDef:
-    return emitPopulatePatternsFuncDefs(os, records);
+    return emitPopulatePatternsFuncDefs(os, records, "EnzymeHLOPatternOp");
   case GenPopulatePatternsInterfaceImpl:
-    return emitPopulatePatterns(os, records);
+    return emitPopulatePatterns(os, records, "EnzymeHLOPatternOp");
+  case GenPopulateRaisingPatternsFuncDecl:
+    return emitPopulatePatternsFuncDecls(os, records, "RaisingPatternOp");
+  case GenPopulateRaisingPatternsFuncDef:
+    return emitPopulatePatternsFuncDefs(os, records, "RaisingPatternOp");
+  case GenPopulateRaisingPatternsInterfaceImpl:
+    return emitPopulatePatterns(os, records, "RaisingPatternOp");
   default:
     llvm::report_fatal_error("unknown action");
     return true;

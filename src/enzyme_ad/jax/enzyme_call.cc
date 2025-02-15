@@ -78,6 +78,8 @@ class CpuKernel {
   uint64_t addr;
 
 public:
+  static constexpr size_t UNKNOWN_PLATFORM = 0x1000000000;
+
   CpuKernel(int64_t identifier, size_t num_out, uint64_t addr)
       : identifier(identifier), num_out(num_out), addr(addr) {}
 
@@ -287,6 +289,9 @@ public:
             break;
           case xla::PrimitiveType::F64:
             ty = "double";
+            break;
+          case xla::PrimitiveType::PRED:
+            ty = "bool";
             break;
           default: {
             std::string err;
@@ -842,8 +847,10 @@ public:
 
     auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/ true,
                               pyargv_strs, llvm_ctx.get(), std::move(linkMod));
-    if (!mod)
+    if (!mod) {
+      llvm::errs() << "Source:\n" << ss.str() << "\n";
       throw pybind11::value_error("failed to compile C++");
+    }
     return std::make_tuple(std::move(mod), std::move(llvm_ctx), out_off,
                            tmpBuf);
   }
@@ -893,7 +900,10 @@ public:
          llvm::ArrayRef<std::string> out_names,
          llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
          llvm::ArrayRef<std::string> in_names, PyObject *pyargv, ABI mode,
-         Language lang, bool xla_runtime, const std::string &pass_pipeline) {
+         Language lang, bool xla_runtime, const std::string &pass_pipeline,
+         const std::string &platform) {
+    if (platform != "cpu")
+      return std::make_tuple(UNKNOWN_PLATFORM, 0);
     llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
     size_t identifier = last_identifier++;
 
@@ -993,15 +1003,22 @@ std::unique_ptr<llvm::orc::LLJIT> CpuKernel::JIT = nullptr;
 // CpuKernel::ES(std::move(*llvm::orc::SelfExecutorProcessControl::Create()));
 } // namespace
 
-void CpuCallback(void *out, void **ins) {
+void Callback(void *out, void **ins) {
   int64_t identifier = *reinterpret_cast<int64_t *>(ins[0]);
   CpuKernel *kernel = CpuKernel::get(identifier);
   if (!kernel) {
+    if (identifier == CpuKernel::UNKNOWN_PLATFORM) {
+      throw pybind11::value_error(
+          "Unknown platform callback could not be executed");
+    }
     // TODO: find a way to fail more gracefully.
     llvm::report_fatal_error("couldn't find enzyme kernel");
   }
   kernel->call(out, ins + 1);
 }
+
+extern "C" void RegisterEnzymeXLAGPUHandler();
+extern "C" void RegisterEnzymeXLACPUHandler();
 
 PYBIND11_MODULE(enzyme_call, m) {
   llvm::InitializeAllTargets();
@@ -1030,7 +1047,7 @@ PYBIND11_MODULE(enzyme_call, m) {
   mlir::arith::registerArithPasses();
   mlir::memref::registerMemRefPasses();
   mlir::registerenzymePasses();
-  regsiterenzymeXLAPasses();
+  mlir::enzyme::registerenzymexlaPasses();
   mlir::enzyme::registerGenerateApplyPatternsPass();
   mlir::enzyme::registerRemoveTransformPass();
   mlir::stablehlo::registerPasses();
@@ -1047,12 +1064,13 @@ PYBIND11_MODULE(enzyme_call, m) {
       .value("Reverse", ABI::Reverse)
       .value("Tape", ABI::Tape);
 
-  m.def("create_enzyme_cpu_kernel",
+  m.def("create_enzyme_kernel",
         [](const std::string &source, const std::string &fn,
            const pybind11::list &py_out_shapes,
            const pybind11::list &py_in_shapes, pybind11::object pyargv,
            ABI mode, Language lang, bool xla_runtime,
-           const std::string &pass_pipeline) -> std::tuple<size_t, size_t> {
+           const std::string &pass_pipeline,
+           const std::string &platform) -> std::tuple<size_t, size_t> {
           llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
           out_shapes.reserve(pybind11::len(py_out_shapes));
           llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;
@@ -1088,7 +1106,7 @@ PYBIND11_MODULE(enzyme_call, m) {
           }
           return CpuKernel::create(fn, source, out_shapes, out_types, in_shapes,
                                    in_types, pyargv.ptr(), mode, (Language)lang,
-                                   xla_runtime, pass_pipeline);
+                                   xla_runtime, pass_pipeline, platform);
         });
 
   m.def("tmp_size",
@@ -1193,8 +1211,8 @@ PYBIND11_MODULE(enzyme_call, m) {
               pyargv.ptr(), (Language)lang, xla_runtime, pass_pipeline);
         });
 
-  m.def("get_cpu_callback", []() {
-    return pybind11::capsule(reinterpret_cast<void *>(&CpuCallback),
+  m.def("get_callback", []() {
+    return pybind11::capsule(reinterpret_cast<void *>(&Callback),
                              "xla._CUSTOM_CALL_TARGET");
   });
 
@@ -1227,6 +1245,12 @@ PYBIND11_MODULE(enzyme_call, m) {
           }
           return run_pass_pipeline(oldsyms, mlir, pass_pipeline);
         });
+
+  m.def("register_enzymexla_cpu_handler",
+        []() { RegisterEnzymeXLACPUHandler(); });
+
+  m.def("register_enzymexla_gpu_handler",
+        []() { RegisterEnzymeXLAGPUHandler(); });
 
   m.def("compile_mhlo_to_llvm_with_xla",
         [](const std::string &mhlo_text, bool xla_runtime,

@@ -2,7 +2,7 @@ include "src/enzyme_ad/jax/Implementations/Common.td"
 
 class HLODerivative<string opName_, dag patternToMatch, list<dag> resultOps, dag forwardOps=(ForwardFromSummedReverse)> : MLIRDerivative<"stablehlo", opName_, patternToMatch, resultOps, forwardOps>;
 
-class HLOInst<string m, string postopt=""> : Inst<m, "stablehlo", postopt>;
+class HLOInst<string m, string postopt="", string preopt=""> : Inst<m, "stablehlo", postopt, preopt>;
 
 class HLOMemoryIdentityOp<string opName_, list<int> ptrargs_, list<int> storedargs_ = [], dag patternToMatch=(Unimplemented), list<dag> reverse_ = []>  : MemoryIdentityOp<"stablehlo", opName_, ptrargs_, storedargs_, patternToMatch, reverse_>;
 
@@ -34,3 +34,13 @@ def : HLODerivative<"UnaryEinsumOp", (Op $x),
                     ],
                     (UnaryEinsum (ResultTypes), (Shadow $x), (EinsumConfig))
                   >;
+
+def : ControlFlowOp<"stablehlo", "CaseOp", [{
+  Operation *createWithShadows(Operation *op, OpBuilder &builder,
+                               MGradientUtils *gutils, Operation *original,
+                               ValueRange remappedOperands,
+                               TypeRange rettys) const {
+    return builder.create<stablehlo::CaseOp>(original->getLoc(), rettys,
+                                        remappedOperands, original->getAttrs(), cast<stablehlo::CaseOp>(op).getBranches().size());
+  }
+}]>;
